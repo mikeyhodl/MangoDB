@@ -21,8 +21,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.mongodb.org/mongo-driver/bson"
 
-	"github.com/FerretDB/FerretDB/integration/setup"
-	"github.com/FerretDB/FerretDB/integration/shareddata"
+	"github.com/FerretDB/FerretDB/v2/integration/setup"
+	"github.com/FerretDB/FerretDB/v2/integration/shareddata"
 )
 
 // explainCompatTestCase describes explain compatibility test case.
@@ -32,7 +32,8 @@ type explainCompatTestCase struct {
 	pipeline   bson.A                   // ignored if nil
 	resultType compatTestCaseResultType // defaults to nonEmptyResult
 
-	skip string // skip test for all handlers, must have issue number mentioned
+	failsForFerretDB string
+	skip             string // TODO https://github.com/FerretDB/FerretDB-DocumentDB/issues/1086
 }
 
 // testExplainCompatError tests explain compatibility test cases.
@@ -41,11 +42,10 @@ type explainCompatTestCase struct {
 // If you see following error, use `testAggregateStagesCompat` test instead.
 //
 //	`(FailedToParse) The 'cursor' option is required, except for aggregate with the explain argument`
-func testExplainCompatError(t *testing.T, testCases map[string]explainCompatTestCase) {
-	t.Helper()
+func testExplainCompatError(tt *testing.T, testCases map[string]explainCompatTestCase) {
+	tt.Helper()
 
-	s := setup.SetupCompatWithOpts(t, &setup.SetupCompatOpts{
-		// Use a provider that works for all handlers.
+	s := setup.SetupCompatWithOpts(tt, &setup.SetupCompatOpts{
 		Providers: []shareddata.Provider{shareddata.Int32s},
 	})
 
@@ -54,45 +54,50 @@ func testExplainCompatError(t *testing.T, testCases map[string]explainCompatTest
 	compatCollection := s.CompatCollections[0]
 
 	for name, tc := range testCases {
-		name, tc := name, tc
-		t.Run(name, func(t *testing.T) {
-			t.Helper()
-
+		tt.Run(name, func(tt *testing.T) {
+			tt.Helper()
 			if tc.skip != "" {
-				t.Skip(tc.skip)
+				tt.Skip(tc.skip)
 			}
 
-			t.Parallel()
+			tt.Parallel()
 
-			t.Run(targetCollection.Name(), func(t *testing.T) {
-				t.Helper()
+			tt.Run(targetCollection.Name(), func(tt *testing.T) {
+				tt.Helper()
 
-				explainParams := bson.D{
-					{tc.command, targetCollection.Name()},
+				var t testing.TB = tt
+				if tc.failsForFerretDB != "" {
+					t = setup.FailsForFerretDB(tt, tc.failsForFerretDB)
 				}
 
+				explainTarget := bson.D{{tc.command, targetCollection.Name()}}
+				explainCompat := bson.D{{tc.command, compatCollection.Name()}}
+
 				if tc.filter != nil {
-					explainParams = bson.D{
-						{tc.command, targetCollection.Name()},
-						{"filter", tc.filter},
-					}
+					explainTarget = append(explainTarget, bson.E{Key: "filter", Value: tc.filter})
+					explainCompat = append(explainCompat, bson.E{Key: "filter", Value: tc.filter})
 				}
 
 				if tc.pipeline != nil {
-					explainParams = bson.D{
-						{tc.command, targetCollection.Name()},
-						{"pipeline", tc.pipeline},
-					}
+					explainTarget = append(explainTarget, bson.E{Key: "pipeline", Value: tc.pipeline})
+					explainCompat = append(explainCompat, bson.E{Key: "pipeline", Value: tc.pipeline})
 				}
 
-				explainCommand := bson.D{{"explain", explainParams}}
 				var targetRes, compatRes bson.D
-				targetErr := targetCollection.Database().RunCommand(ctx, explainCommand).Decode(&targetRes)
-				compatErr := compatCollection.Database().RunCommand(ctx, explainCommand).Decode(&compatRes)
+				targetErr := targetCollection.Database().RunCommand(
+					ctx,
+					bson.D{{"explain", explainTarget}},
+				).Decode(&targetRes)
+				compatErr := compatCollection.Database().RunCommand(
+					ctx,
+					bson.D{{"explain", explainCompat}},
+				).Decode(&compatRes)
 
 				if targetErr != nil {
 					t.Logf("Target error: %v", targetErr)
 					t.Logf("Compat error: %v", compatErr)
+
+					// error messages are intentionally not compared
 					AssertMatchesCommandError(t, compatErr, targetErr)
 
 					return
@@ -108,7 +113,6 @@ func testExplainCompatError(t *testing.T, testCases map[string]explainCompatTest
 				assert.Equal(t, compatMap["ok"], targetMap["ok"])
 				assert.Equal(t, compatMap["command"], targetMap["command"])
 
-				// check queryPlanner is set
 				assert.NotEmpty(t, targetMap["queryPlanner"])
 
 				var nonEmptyResults bool
@@ -130,9 +134,12 @@ func testExplainCompatError(t *testing.T, testCases map[string]explainCompatTest
 }
 
 func TestExplainCompatError(t *testing.T) {
+	t.Parallel()
+
 	testCases := map[string]explainCompatTestCase{
 		"AggregateMissingPipeline": {
 			command: "aggregate",
+			skip:    "https://github.com/FerretDB/FerretDB-DocumentDB/issues/958",
 		},
 		"AggregateInvalidPipeline": {
 			command:  "aggregate",
@@ -144,6 +151,10 @@ func TestExplainCompatError(t *testing.T) {
 		"Find": {
 			command: "find",
 			filter:  bson.D{{"v", int32(42)}},
+		},
+		"InvalidCommandGetLog": {
+			command: "create",
+			skip:    "https://github.com/FerretDB/FerretDB/issues/2704",
 		},
 	}
 

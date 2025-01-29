@@ -15,18 +15,19 @@
 package telemetry
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/AlekSi/pointer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/zap"
 
-	"github.com/FerretDB/FerretDB/internal/clientconn/connmetrics"
-	"github.com/FerretDB/FerretDB/internal/util/state"
+	"github.com/FerretDB/FerretDB/v2/internal/clientconn/connmetrics"
+	"github.com/FerretDB/FerretDB/v2/internal/util/state"
+	"github.com/FerretDB/FerretDB/v2/internal/util/testutil"
 )
 
-func TestNewReporterLock(t *testing.T) {
+func TestReporterLocked(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct {
@@ -62,27 +63,25 @@ func TestNewReporterLock(t *testing.T) {
 			locked:   true,
 		},
 	} {
-		name, tc := name, tc
-
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
-			provider, err := state.NewProvider("")
+			sp, err := state.NewProvider("")
 			require.NoError(t, err)
 
-			opts := NewReporterOpts{
+			_, err = NewReporter(&NewReporterOpts{
+				URL:         "http://127.0.0.1:1/",
+				File:        filepath.Join(t.TempDir(), "telemetry.json"),
 				F:           tc.f,
 				DNT:         tc.dnt,
 				ExecName:    tc.execName,
 				ConnMetrics: connmetrics.NewListenerMetrics().ConnMetrics,
-				P:           provider,
-				L:           zap.L(),
-			}
-
-			_, err = NewReporter(&opts)
+				P:           sp,
+				L:           testutil.Logger(t),
+			})
 			assert.NoError(t, err)
 
-			s := provider.Get()
+			s := sp.Get()
 			assert.Equal(t, tc.t, s.Telemetry)
 			assert.Equal(t, tc.locked, s.TelemetryLocked)
 		})

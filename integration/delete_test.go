@@ -22,15 +22,12 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 
-	"github.com/FerretDB/FerretDB/integration/setup"
-	"github.com/FerretDB/FerretDB/integration/shareddata"
-	"github.com/FerretDB/FerretDB/internal/handlers/common"
+	"github.com/FerretDB/FerretDB/v2/integration/setup"
+	"github.com/FerretDB/FerretDB/v2/integration/shareddata"
 )
 
 // TestDeleteSimple checks simple cases of doc deletion.
 func TestDeleteSimple(t *testing.T) {
-	setup.SkipForTigris(t)
-
 	t.Parallel()
 	ctx, collection := setup.Setup(t, shareddata.Scalars, shareddata.Composites)
 
@@ -47,7 +44,6 @@ func TestDeleteSimple(t *testing.T) {
 			expectedCount: 0,
 		},
 	} {
-		name, tc := name, tc
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
@@ -58,19 +54,30 @@ func TestDeleteSimple(t *testing.T) {
 	}
 }
 
-func TestDeleteLimitErrors(t *testing.T) {
+func TestDelete(t *testing.T) {
 	t.Parallel()
 
 	for name, tc := range map[string]struct {
-		deletes     bson.A
-		expectedErr *mongo.CommandError
-		skip        string
+		deletes bson.A // required, set to deletes parameter
+
+		err              *mongo.CommandError // optional, expected error from MongoDB
+		altMessage       string              // optional, alternative error message for FerretDB, ignored if empty
+		skip             string              // TODO https://github.com/FerretDB/FerretDB-DocumentDB/issues/1086
+		failsForFerretDB string
 	}{
+		"QueryNotSet": {
+			deletes: bson.A{bson.D{}},
+			err: &mongo.CommandError{
+				Code:    40414,
+				Name:    "Location40414",
+				Message: "BSON field 'delete.deletes.q' is missing but a required field",
+			},
+		},
 		"NotSet": {
 			deletes: bson.A{bson.D{{"q", bson.D{{"v", "foo"}}}}},
-			expectedErr: &mongo.CommandError{
-				Code:    int32(common.ErrMissingField),
-				Name:    common.ErrMissingField.String(),
+			err: &mongo.CommandError{
+				Code:    40414,
+				Name:    "Location40414",
 				Message: "BSON field 'delete.deletes.limit' is missing but a required field",
 			},
 		},
@@ -83,40 +90,53 @@ func TestDeleteLimitErrors(t *testing.T) {
 		},
 		"InvalidFloat": {
 			deletes: bson.A{bson.D{{"q", bson.D{{"v", "foo"}}}, {"limit", 42.13}}},
-			expectedErr: &mongo.CommandError{
-				Code:    int32(common.ErrFailedToParse),
-				Name:    common.ErrFailedToParse.String(),
+			err: &mongo.CommandError{
+				Code:    9,
+				Name:    "FailedToParse",
 				Message: "The limit field in delete objects must be 0 or 1. Got 42.13",
 			},
+			altMessage: "The limit field in delete objects must be 0 or 1. Got 42",
 		},
 		"InvalidInt": {
 			deletes: bson.A{bson.D{{"q", bson.D{{"v", "foo"}}}, {"limit", 100}}},
-			expectedErr: &mongo.CommandError{
-				Code:    int32(common.ErrFailedToParse),
-				Name:    common.ErrFailedToParse.String(),
+			err: &mongo.CommandError{
+				Code:    9,
+				Name:    "FailedToParse",
 				Message: "The limit field in delete objects must be 0 or 1. Got 100",
 			},
+			altMessage: "The 'delete.deletes.limit' field must be 0 or 1. Got 100",
 		},
 	} {
-		name, tc := name, tc
-		t.Run(name, func(t *testing.T) {
+		t.Run(name, func(tt *testing.T) {
 			if tc.skip != "" {
-				t.Skip(tc.skip)
+				tt.Skip(tc.skip)
 			}
 
-			t.Parallel()
-			ctx, collection := setup.Setup(t)
+			tt.Parallel()
 
-			res := collection.Database().RunCommand(ctx, bson.D{
+			var t testing.TB = tt
+
+			if tc.failsForFerretDB != "" {
+				t = setup.FailsForFerretDB(tt, tc.failsForFerretDB)
+			}
+
+			require.NotNil(t, tc.deletes, "deletes must not be nil")
+
+			ctx, collection := setup.Setup(tt)
+
+			var res bson.D
+			err := collection.Database().RunCommand(ctx, bson.D{
 				{"delete", collection.Name()},
 				{"deletes", tc.deletes},
-			})
+			}).Decode(&res)
+			if tc.err != nil {
+				assert.Nil(t, res)
+				AssertEqualAltCommandError(t, *tc.err, tc.altMessage, err)
 
-			if tc.expectedErr != nil {
-				AssertEqualError(t, *tc.expectedErr, res.Err())
 				return
 			}
-			assert.Equal(t, nil, res.Err())
+
+			require.NoError(t, err)
 		})
 	}
 }
