@@ -33,7 +33,8 @@ type Provider struct {
 	subs map[chan struct{}]struct{}
 }
 
-// NewProvider creates a new Provider that stores state in the given file.
+// NewProvider creates a new Provider that stores state in the given file
+// (that will be created automatically if needed).
 //
 // If filename is empty, then the state is not persisted.
 //
@@ -53,12 +54,33 @@ func NewProvider(filename string) (*Provider, error) {
 	p.s.fill()
 
 	// Simply overwrite state to handle all errors and edge cases
-	// like missing directory, corrupted file, invalid UUID, etc.
+	// like missing directory, corrupted file, invalid UUID, etc.,
+	// and also to check permissions.
 	if err := persistState(p.s, p.filename); err != nil {
 		return p, fmt.Errorf("failed to persist state: %w", err)
 	}
 
 	return p, nil
+}
+
+// NewProviderDir creates a new Provider that stores state in the state.json file in the given directory
+// (that will be created automatically if needed).
+func NewProviderDir(dir string) (*Provider, error) {
+	if dir == "" {
+		return nil, fmt.Errorf("state directory is not set")
+	}
+
+	f, err := filepath.Abs(filepath.Join(dir, "state.json"))
+	if err != nil {
+		return nil, err
+	}
+
+	sp, err := NewProvider(f)
+	if err != nil {
+		return nil, newProviderDirErr(f, err)
+	}
+
+	return sp, nil
 }
 
 // MetricsCollector returns Prometheus metrics collector for that provider.

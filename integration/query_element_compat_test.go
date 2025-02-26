@@ -25,8 +25,12 @@ func TestQueryElementCompatExist(t *testing.T) {
 	t.Parallel()
 
 	testCases := map[string]queryCompatTestCase{
-		"Exists": {
+		"IDExistsTrue": {
 			filter: bson.D{{"_id", bson.D{{"$exists", true}}}},
+		},
+		"IDExistsFalse": {
+			filter:     bson.D{{"_id", bson.D{{"$exists", false}}}},
+			resultType: emptyResult,
 		},
 		"ExistsSecondField": {
 			filter: bson.D{{"v", bson.D{{"$exists", true}}}},
@@ -120,12 +124,14 @@ func TestQueryElementCompatElementType(t *testing.T) {
 			resultType: emptyResult,
 		},
 		"TypeArrayBadValuePlusInf": {
-			filter:     bson.D{{"v", bson.D{{"$type", []any{"binData", math.Inf(+1)}}}}},
-			resultType: emptyResult,
+			filter:           bson.D{{"v", bson.D{{"$type", []any{"binData", math.Inf(+1)}}}}},
+			resultType:       emptyResult,
+			failsForFerretDB: "https://github.com/FerretDB/FerretDB-DocumentDB/issues/245",
 		},
 		"TypeArrayBadValueMinusInf": {
-			filter:     bson.D{{"v", bson.D{{"$type", []any{"binData", math.Inf(-1)}}}}},
-			resultType: emptyResult,
+			filter:           bson.D{{"v", bson.D{{"$type", []any{"binData", math.Inf(-1)}}}}},
+			resultType:       emptyResult,
+			failsForFerretDB: "https://github.com/FerretDB/FerretDB-DocumentDB/issues/245",
 		},
 		"TypeArrayBadValueNegativeFloat": {
 			filter:     bson.D{{"v", bson.D{{"$type", []any{"binData", -1.123}}}}},

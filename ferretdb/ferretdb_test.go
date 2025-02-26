@@ -16,69 +16,51 @@ package ferretdb_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
-	"path/filepath"
+	"log/slog"
+	"os/exec"
+	"testing"
 
-	"github.com/FerretDB/FerretDB/ferretdb"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"go.mongodb.org/mongo-driver/v2/bson"
+	"go.mongodb.org/mongo-driver/v2/mongo"
+	"go.mongodb.org/mongo-driver/v2/mongo/options"
+
+	"github.com/FerretDB/FerretDB/v2/ferretdb"
+	"github.com/FerretDB/FerretDB/v2/internal/util/testutil"
 )
 
-func Example_tcp() {
-	f, err := ferretdb.New(&ferretdb.Config{
-		Listener: ferretdb.ListenerConfig{
-			TCP: "127.0.0.1:17027",
-		},
-		Handler:       "pg",
-		PostgreSQLURL: "postgres://127.0.0.1:5432/ferretdb",
-	})
-	if err != nil {
-		log.Fatal(err)
+func TestDeps(t *testing.T) {
+	t.Parallel()
+
+	var res struct {
+		Deps []string `json:"Deps"`
 	}
+	b, err := exec.Command("go", "list", "-json").Output()
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(b, &res))
 
-	ctx, cancel := context.WithCancel(context.Background())
-
-	done := make(chan struct{})
-
-	go func() {
-		log.Print(f.Run(ctx))
-		close(done)
-	}()
-
-	uri := f.MongoDBURI()
-	fmt.Println(uri)
-
-	// Use MongoDB URI as usual. For example:
-	//
-	// import "go.mongodb.org/mongo-driver/mongo"
-	//
-	// [...]
-	//
-	// mongo.Connect(ctx, options.Client().ApplyURI(uri))
-
-	cancel()
-	<-done
-
-	// Output: mongodb://127.0.0.1:17027/
+	assert.NotContains(t, res.Deps, "testing", `package "testing" should not be imported by non-testing code`)
 }
 
-func Example_unix() {
+func Example() {
 	f, err := ferretdb.New(&ferretdb.Config{
-		Listener: ferretdb.ListenerConfig{
-			Unix: "/tmp/ferretdb.sock",
-		},
-		Handler:       "pg",
-		PostgreSQLURL: "postgres://127.0.0.1:5432/ferretdb",
+		PostgreSQLURL: "postgres://username:password@127.0.0.1:5432/postgres",
+		ListenAddr:    "127.0.0.1:17027",
+		StateDir:      ".",
 	})
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-
 	done := make(chan struct{})
 
 	go func() {
-		log.Print(f.Run(ctx))
+		f.Run(ctx)
 		close(done)
 	}()
 
@@ -86,56 +68,64 @@ func Example_unix() {
 	fmt.Println(uri)
 
 	// Use MongoDB URI as usual.
+	// For example:
+	//
+	// import "go.mongodb.org/mongo-driver/v2/mongo"
+	// import "go.mongodb.org/mongo-driver/v2/mongo/options"
+	//
+	// [...]
+	//
+	// mongo.Connect(options.Client().ApplyURI(uri))
 
 	cancel()
 	<-done
 
-	// Output: mongodb://%2Ftmp%2Fferretdb.sock/
+	// Output: mongodb://127.0.0.1:17027/
 }
 
-func Example_tls() {
-	certPath := filepath.Join("..", "build", "certs", "server-cert.pem")
-	keyPath := filepath.Join("..", "build", "certs", "server-key.pem")
-	caPath := filepath.Join("..", "build", "certs", "rootCA-cert.pem")
-
+func TestFerretDB(t *testing.T) {
 	f, err := ferretdb.New(&ferretdb.Config{
-		Listener: ferretdb.ListenerConfig{
-			TLS:         "127.0.0.1:17028",
-			TLSCertFile: certPath,
-			TLSKeyFile:  keyPath,
-			TLSCAFile:   caPath,
-		},
-		Handler:       "pg",
-		PostgreSQLURL: "postgres://127.0.0.1:5432/ferretdb",
+		PostgreSQLURL: testutil.PostgreSQLURI(t),
+		ListenAddr:    "127.0.0.1:0",
+		StateDir:      t.TempDir(),
+		LogLevel:      slog.LevelDebug,
+		LogOutput:     testutil.NewLogWriter(t),
 	})
-	if err != nil {
-		log.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	ctx, cancel := context.WithCancel(context.Background())
-
+	ctx, cancel := context.WithCancel(testutil.Ctx(t))
 	done := make(chan struct{})
 
 	go func() {
-		log.Print(f.Run(ctx))
+		f.Run(ctx)
 		close(done)
 	}()
 
 	uri := f.MongoDBURI()
-	fmt.Println(uri)
+	require.NotEmpty(t, uri)
 
-	// Use MongoDB URI as usual. To connect to TLS listener, set TLS config.
-	// For example:
-	//
-	// import "go.mongodb.org/mongo-driver/mongo"
-	// import "go.mongodb.org/mongo-driver/mongo/options"
-	//
-	// [...]
-	//
-	// mongo.Connect(ctx, options.Client().ApplyURI(uri))
+	client, err := mongo.Connect(options.Client().ApplyURI(uri))
+	require.NoError(t, err)
+
+	err = client.Ping(ctx, nil)
+	require.NoError(t, err)
+
+	res := client.Database("admin").RunCommand(ctx, bson.D{{Key: "getFreeMonitoringStatus", Value: 1}})
+
+	var actual bson.D
+	err = res.Decode(&actual)
+	require.NoError(t, err)
+
+	expected := bson.D{
+		{Key: "state", Value: "undecided"},
+		{Key: "message", Value: "monitoring is undecided"},
+		{Key: "ok", Value: 1.0},
+	}
+	assert.Equal(t, expected, actual)
+
+	err = client.Disconnect(ctx)
+	require.NoError(t, err)
 
 	cancel()
 	<-done
-
-	// Output: mongodb://127.0.0.1:17028/?tls=true
 }

@@ -24,41 +24,46 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/FerretDB/FerretDB/integration/setup"
-	"github.com/FerretDB/FerretDB/integration/shareddata"
+	"github.com/FerretDB/FerretDB/v2/integration/setup"
+	"github.com/FerretDB/FerretDB/v2/integration/shareddata"
 )
 
 func TestQueryArrayDotNotation(t *testing.T) {
-	setup.SkipForTigris(t)
-
 	t.Parallel()
 	ctx, collection := setup.Setup(t, shareddata.Scalars, shareddata.Composites)
 
 	for name, tc := range map[string]struct {
-		filter      bson.D
-		expectedIDs []any
-		err         *mongo.CommandError
+		filter      bson.D // required
+		expectedIDs []any  // optional
+
+		err        *mongo.CommandError // optional, expected error from MongoDB
+		altMessage string              // optional, alternative error message for FerretDB, ignored if empty
 	}{
 		"FieldPositionQueryRegex": {
-			// TODO: move to compat https://github.com/FerretDB/FerretDB/issues/1540
+			// Move to compat.
+			// TODO https://github.com/FerretDB/FerretDB/issues/1540
 			filter: bson.D{{"v.array.0", bson.D{{"$lt", primitive.Regex{Pattern: "^$"}}}}},
 			err: &mongo.CommandError{
 				Code:    2,
 				Name:    "BadValue",
 				Message: "Can't have RegEx as arg to predicate over field 'v.array.0'.",
 			},
+			altMessage: "Can't have RegEx as arg to predicate over field 'v.array.0'.",
 		},
 	} {
-		name, tc := name, tc
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 
+			require.NotNil(t, tc.filter, "filter must not be nil")
+
 			cursor, err := collection.Find(ctx, tc.filter, options.Find().SetSort(bson.D{{"_id", 1}}))
 			if tc.err != nil {
-				require.Nil(t, tc.expectedIDs)
-				AssertEqualError(t, *tc.err, err)
+				assert.Nil(t, cursor)
+				AssertEqualAltCommandError(t, *tc.err, tc.altMessage, err)
+
 				return
 			}
+
 			require.NoError(t, err)
 
 			var actual []bson.D

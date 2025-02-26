@@ -12,30 +12,44 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package lazyerrors provides temporary error wrapping for lazy developers.
+// Package lazyerrors provides error wrapping with file location.
+//
+// Only one file location is captures for each error, not a full stack.
+// If the chain is needed, don't forget to add links manually.
 package lazyerrors
 
 import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
 
-type withStack struct {
+// pc returns a program counter of the caller.
+func pc() uintptr {
+	pc := make([]uintptr, 1)
+	runtime.Callers(3, pc)
+
+	return pc[0]
+}
+
+// lazyerror wraps an error with a file location.
+type lazyerror struct {
 	error
 	pc uintptr
 }
 
-func (e withStack) Error() string {
-	if e.pc == 0 {
-		return e.error.Error()
+// Error return the wrapped error message prefixed with file location.
+func (le lazyerror) Error() string {
+	if le.pc == 0 {
+		return le.error.Error()
 	}
 
-	f := frame(e.pc)
+	f, _ := runtime.CallersFrames([]uintptr{le.pc}).Next()
 	if f.File == "" {
-		return "[unknown] " + e.error.Error()
+		return "[unknown] " + le.error.Error()
 	}
 
 	_, file := filepath.Split(f.File)
@@ -45,36 +59,44 @@ func (e withStack) Error() string {
 		l += " " + f.Function[i+1:]
 	}
 
-	return fmt.Sprintf("[%s] %s", l, e.error)
+	return fmt.Sprintf("[%s] %s", l, le.error)
 }
 
-func (e withStack) Unwrap() error {
-	return e.error
+// GoString implements fmt.GoStringer interface.
+//
+// It exists so %#v fmt verb could correctly print wrapped errors.
+func (le lazyerror) GoString() string {
+	return fmt.Sprintf("lazyerror(%s)", le.Error())
 }
 
-// New returns new error based on string, enriched with callers.
+// Unwrap returns the wrapped error.
+func (le lazyerror) Unwrap() error {
+	return le.error
+}
+
+// New returns new error with a given error string and file location.
 func New(s string) error {
-	return withStack{
+	return lazyerror{
 		error: errors.New(s),
 		pc:    pc(),
 	}
 }
 
-// Error returns new error based on err and ensures err is not nil.
+// Error returns new error with a given non-nil error and file location.
 func Error(err error) error {
 	if err == nil {
 		panic("err is nil")
 	}
 
-	return withStack{
+	return lazyerror{
 		error: err,
 		pc:    pc(),
 	}
 }
 
-// Errorf returns formatted error enriched with callers.
+// Errorf returns new error with a given format string and file location.
 func Errorf(format string, a ...any) error {
-	return withStack{
+	return lazyerror{
 		error: fmt.Errorf(format, a...),
 		pc:    pc(),
 	}
